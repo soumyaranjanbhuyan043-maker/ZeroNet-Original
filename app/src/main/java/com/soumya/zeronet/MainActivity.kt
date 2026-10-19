@@ -8,6 +8,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
@@ -40,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private val connectedPeers = ConcurrentHashMap.newKeySet<String>()
     private val outgoingRequests = ConcurrentHashMap.newKeySet<String>()
     private val incomingFileChunks = ConcurrentHashMap<String, ConcurrentHashMap<Int, String>>()
+    private val pendingMessages = ConcurrentHashMap<String, MutableList<String>>()
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -301,6 +304,7 @@ class MainActivity : AppCompatActivity() {
         val settings: WebSettings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
+        settings.databaseEnabled = true
         settings.allowFileAccess = true
         settings.allowContentAccess = true
         settings.defaultTextEncodingName = "utf-8"
@@ -363,22 +367,24 @@ class MainActivity : AppCompatActivity() {
 
                 window.incomingQueue = [];
 
-                // 1. Delete all 4 demo peers & reset stale connections on boot
+                // 1. Delete ONLY the 4 hardcoded demo peers. NEVER touch real saved chats or trusted status!
                 const demoKeys = ['rahul', 'priya', 'vikram', 'amit'];
                 if (typeof defaultPeers !== 'undefined') {
                     demoKeys.forEach(k => delete defaultPeers[k]);
                 }
                 if (typeof peerData !== 'undefined') {
-                    demoKeys.forEach(k => delete peerData[k]);
-                    Object.keys(peerData).forEach(k => {
-                        peerData[k].trusted = false;
-                        peerData[k].note = 'Offline • Tap Scan';
+                    let removedDemo = false;
+                    demoKeys.forEach(k => {
+                        if (peerData[k]) {
+                            delete peerData[k];
+                            removedDemo = true;
+                        }
                     });
-                    saveState(true);
+                    if (removedDemo) saveState(true);
                     refreshAllLists();
                 }
 
-                // 2. Wire up the top 'Req' notification button to show real incoming requests
+                // 2. Wire up the top 'Req' notification button for real incoming requests
                 window.updateReqBadge = function() {
                     const btns = document.querySelectorAll('button');
                     btns.forEach(btn => {
@@ -398,7 +404,7 @@ class MainActivity : AppCompatActivity() {
                             btn.onclick = function() {
                                 if (window.incomingQueue.length > 0) {
                                     const req = window.incomingQueue[0];
-                                    openRequestModal(req.name, 'Direct Wi-Fi P2P', '10m', req.key);
+                                    window.openRequestModal(req.name, 'Direct Wi-Fi P2P', '10m', req.key, true);
                                 } else {
                                     showToast('🔔 No pending connection requests');
                                 }
@@ -421,7 +427,46 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 4. Start real P2P engine on login
+                // 4. CRITICAL FIX: Intercept openRequestModal!
+                // When user clicks 'Connect' on their own phone, index.html calls openRequestModal(name, mode, dist, key) without 5th arg.
+                // We block the popup from opening on the sender's phone and send the P2P request to the OTHER phone instead!
+                const origOpenRequestModal = window.openRequestModal;
+                window.openRequestModal = function(name, mode, dist, key, isRealIncomingFromOtherPhone) {
+                    let targetKey = key;
+                    if (!targetKey || !peerData[targetKey]) {
+                        targetKey = Object.keys(peerData).find(k => peerData[k] && peerData[k].name === name);
+                    }
+
+                    if (!isRealIncomingFromOtherPhone) {
+                        if (targetKey && peerData[targetKey]) {
+                            showToast('📨 Request sent to ' + peerData[targetKey].name + '... Waiting for them to Accept');
+                            if (window.AndroidBridge) {
+                                window.AndroidBridge.connectToPeer(targetKey);
+                            }
+                        }
+                        return;
+                    }
+
+                    if (origOpenRequestModal) {
+                        origOpenRequestModal(name, mode, dist, targetKey || key);
+                    }
+                };
+
+                // 5. Also handle handlePeerAction if called by Chat/Connect button
+                window.handlePeerAction = function(key) {
+                    const p = peerData[key];
+                    if (!p || p.blocked) return;
+                    if (!p.trusted) {
+                        showToast('📨 Request sent to ' + p.name + '... Waiting for them to Accept');
+                        if (window.AndroidBridge) {
+                            window.AndroidBridge.connectToPeer(key);
+                        }
+                    } else {
+                        openChat(key);
+                    }
+                };
+
+                // 6. Start real P2P engine on login
                 const origStartApp = window.startApp;
                 window.startApp = function() {
                     if (origStartApp) origStartApp();
@@ -433,7 +478,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 5. Real Scan button
+                // 7. Real Scan button (keeps all saved chats intact)
                 window.rescanPeers = function() {
                     demoKeys.forEach(k => delete peerData[k]);
                     refreshAllLists();
@@ -443,51 +488,27 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 6. FIXED: Tapping 'Chat' sends request to OTHER phone (never opens modal on your own phone!)
-                window.handlePeerAction = function(key) {
-                    const p = peerData[key];
-                    if (!p || p.blocked) return;
-                    const isLive = window.AndroidBridge && window.AndroidBridge.isPeerConnected(key);
-                    if (!isLive) {
-                        p.trusted = false;
-                        showToast('📨 Request sent to ' + p.name + '... Waiting for them to Accept');
-                        if (window.AndroidBridge) {
-                            window.AndroidBridge.connectToPeer(key);
-                        }
-                        return;
-                    }
-                    p.trusted = true;
-                    openChat(key);
-                };
-
-                // Also guard openChat so it only opens if live connected
+                // 8. When opening a saved chat, ensure background P2P connection is active
                 const origOpenChat = window.openChat;
                 window.openChat = function(key) {
                     const p = peerData[key];
                     if (!p) return;
-                    const isLive = window.AndroidBridge && window.AndroidBridge.isPeerConnected(key);
-                    if (!isLive) {
-                        showToast('📨 Connecting to ' + p.name + '... Ask them to Accept!');
-                        if (window.AndroidBridge) {
-                            window.AndroidBridge.connectToPeer(key);
-                        }
+                    if (!p.trusted) {
+                        showToast('📨 Request sent to ' + p.name + '... Waiting for them to Accept');
+                        if (window.AndroidBridge) window.AndroidBridge.connectToPeer(key);
                         return;
+                    }
+                    if (window.AndroidBridge && !window.AndroidBridge.isPeerConnected(key)) {
+                        window.AndroidBridge.connectToPeer(key);
                     }
                     if (origOpenChat) origOpenChat(key);
                 };
 
-                // 7. FIXED: Real P2P Message Send (no fake demo reply)
+                // 9. Real P2P Message Send (saves permanently & sends or queues if reconnecting)
                 window.sendMessage = function() {
                     const input = document.getElementById('messageInput');
                     const text = input ? input.value.trim() : '';
                     if (!text || typeof activePeer === 'undefined' || !activePeer || !peerData[activePeer]) return;
-
-                    const isLive = window.AndroidBridge && window.AndroidBridge.isPeerConnected(activePeer);
-                    if (!isLive) {
-                        showToast('⚠️ Not connected! Reconnecting to peer...');
-                        if (window.AndroidBridge) window.AndroidBridge.connectToPeer(activePeer);
-                        return;
-                    }
 
                     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                     peerData[activePeer].messages.push({
@@ -508,16 +529,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 8. FIXED: Capture any File / Photo / PDF selection and stream in 16KB chunks to other phone
+                // 10. File / Photo / PDF selection chunked transfer
                 document.addEventListener('change', function(e) {
                     if (e.target && e.target.type === 'file' && e.target.files && e.target.files[0]) {
                         const file = e.target.files[0];
                         if (typeof activePeer !== 'undefined' && activePeer && window.AndroidBridge) {
-                            const isLive = window.AndroidBridge.isPeerConnected(activePeer);
-                            if (!isLive) {
-                                showToast('⚠️ Connect with peer first before sending files!');
-                                return;
-                            }
                             const sizeMB = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
                             const reader = new FileReader();
                             reader.onload = function(evt) {
@@ -529,7 +545,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }, true);
 
-                // 9. FIXED: Accept / Reject / Block real incoming connection request
+                // 11. Accept / Reject / Block real incoming connection request
                 const origCloseReq = window.closeRequestModal;
                 window.closeRequestModal = function(action, fromBack) {
                     const targetKey = typeof pendingReqKey !== 'undefined' ? pendingReqKey : null;
@@ -547,7 +563,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 10. Helper to render incoming or updating file cards on receiver phone
+                // 12. Helper to render incoming file progress on receiver phone
                 window.onReceiveFileProgress = function(peerKey, transferId, fileName, fileSize, pct, savedPath) {
                     const p = peerData[peerKey];
                     if (!p) return;
@@ -618,15 +634,22 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun connectToPeer(endpointId: String) {
             runOnUiThread {
-                if (!connectedPeers.contains(endpointId)) {
-                    outgoingRequests.add(endpointId)
-                    connectionsClient.requestConnection(myNickname, endpointId, connectionLifecycleCallback)
-                        .addOnFailureListener {
+                if (connectedPeers.contains(endpointId)) return@runOnUiThread
+                outgoingRequests.add(endpointId)
+                connectionsClient.requestConnection(myNickname, endpointId, connectionLifecycleCallback)
+                    .addOnFailureListener { e ->
+                        if (e.message?.contains("8003") == true || e.message?.contains("ALREADY_CONNECTED") == true) {
+                            connectedPeers.add(endpointId)
                             outgoingRequests.remove(endpointId)
-                            // If already requesting or link busy, retry discovery handshake
-                            webView.evaluateJavascript("showToast('🔄 Retrying connection request...');", null)
+                        } else {
+                            // Retry once after short delay if radio was busy
+                            Handler(Looper.getMainLooper()).postDelayed({
+                                if (!connectedPeers.contains(endpointId)) {
+                                    connectionsClient.requestConnection(myNickname, endpointId, connectionLifecycleCallback)
+                                }
+                            }, 600)
                         }
-                }
+                    }
             }
         }
 
@@ -637,12 +660,27 @@ class MainActivity : AppCompatActivity() {
                 put("senderName", myNickname)
                 put("text", message)
             }
-            val bytes = json.toString().toByteArray(StandardCharsets.UTF_8)
-            connectionsClient.sendPayload(peerKey, Payload.fromBytes(bytes))
+            val rawJson = json.toString()
+            if (connectedPeers.contains(peerKey)) {
+                val bytes = rawJson.toByteArray(StandardCharsets.UTF_8)
+                connectionsClient.sendPayload(peerKey, Payload.fromBytes(bytes))
+            } else {
+                // Queue message and auto-connect so message is delivered as soon as link is up
+                val list = pendingMessages.getOrPut(peerKey) { mutableListOf() }
+                list.add(rawJson)
+                connectToPeer(peerKey)
+            }
         }
 
         @JavascriptInterface
         fun sendP2PFile(peerKey: String, fileName: String, fileSize: String, kind: String, dataUrl: String) {
+            if (!connectedPeers.contains(peerKey)) {
+                runOnUiThread {
+                    webView.evaluateJavascript("showToast('🔄 Reconnecting to peer, please try sending in 2 seconds...');", null)
+                }
+                connectToPeer(peerKey)
+                return
+            }
             Thread {
                 try {
                     val transferId = "f_" + System.currentTimeMillis()
@@ -714,31 +752,58 @@ class MainActivity : AppCompatActivity() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
             val safeName = info.endpointName.replace("'", "")
             val initials = safeName.take(2).uppercase()
+
+            // Preserve any existing chat messages & trusted status if peer was saved earlier!
             val js = """
-                if (typeof peerData !== 'undefined') {
-                    // Remove any old disconnected entry with the same device name
+                (function() {
+                    if (typeof peerData === 'undefined') return 'false';
+                    let savedMessages = [];
+                    let wasTrusted = false;
+                    let wasBlocked = false;
+
                     Object.keys(peerData).forEach(oldKey => {
-                        if (oldKey !== '$endpointId' && peerData[oldKey].name === '$safeName') {
-                            delete peerData[oldKey];
+                        if (peerData[oldKey] && peerData[oldKey].name === '$safeName') {
+                            if (peerData[oldKey].messages && peerData[oldKey].messages.length > 0) {
+                                savedMessages = peerData[oldKey].messages;
+                            }
+                            if (peerData[oldKey].trusted) wasTrusted = true;
+                            if (peerData[oldKey].blocked) wasBlocked = true;
+                            if (oldKey !== '$endpointId') {
+                                if (typeof activePeer !== 'undefined' && activePeer === oldKey) {
+                                    activePeer = '$endpointId';
+                                }
+                                delete peerData[oldKey];
+                            }
                         }
                     });
+
                     peerData['$endpointId'] = {
                         key: '$endpointId',
                         initials: '$initials',
                         name: '$safeName',
                         mode: 'direct',
                         distanceMeters: 12,
-                        note: 'Nearby • Tap Chat',
-                        trusted: false,
-                        blocked: false,
-                        messages: []
+                        note: wasTrusted ? 'Direct Wi-Fi' : 'Nearby • Tap Connect',
+                        trusted: wasTrusted,
+                        blocked: wasBlocked,
+                        messages: savedMessages
                     };
                     saveState(true);
                     refreshAllLists();
                     showToast('📡 Found nearby: $safeName');
-                }
+                    return wasTrusted ? 'TRUSTED' : 'UNTRUSTED';
+                })();
             """.trimIndent()
-            runOnUiThread { webView.evaluateJavascript(js, null) }
+
+            runOnUiThread {
+                webView.evaluateJavascript(js) { res ->
+                    // If we already trusted & chatted with this friend before, auto-reconnect silently!
+                    if (res != null && res.contains("TRUSTED") && !connectedPeers.contains(endpointId)) {
+                        outgoingRequests.add(endpointId)
+                        connectionsClient.requestConnection(myNickname, endpointId, connectionLifecycleCallback)
+                    }
+                }
+            }
         }
 
         override fun onEndpointLost(endpointId: String) {
@@ -756,56 +821,90 @@ class MainActivity : AppCompatActivity() {
         override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
             val safeName = info.endpointName.replace("'", "")
             val initials = safeName.take(2).uppercase()
+            val isIncoming = info.isIncomingConnection
 
-            // Ensure peer exists in peerData on both phones
-            val ensurePeerJs = """
-                if (typeof peerData !== 'undefined') {
+            val syncAndCheckTrustedJs = """
+                (function() {
+                    if (typeof peerData === 'undefined') return 'UNTRUSTED';
+                    let savedMessages = [];
+                    let wasTrusted = false;
+                    let wasBlocked = false;
+
                     Object.keys(peerData).forEach(oldKey => {
-                        if (oldKey !== '$endpointId' && peerData[oldKey].name === '$safeName') {
-                            delete peerData[oldKey];
+                        if (peerData[oldKey] && peerData[oldKey].name === '$safeName') {
+                            if (peerData[oldKey].messages && peerData[oldKey].messages.length > 0) {
+                                savedMessages = peerData[oldKey].messages;
+                            }
+                            if (peerData[oldKey].trusted) wasTrusted = true;
+                            if (peerData[oldKey].blocked) wasBlocked = true;
+                            if (oldKey !== '$endpointId') {
+                                if (typeof activePeer !== 'undefined' && activePeer === oldKey) {
+                                    activePeer = '$endpointId';
+                                }
+                                delete peerData[oldKey];
+                            }
                         }
                     });
-                    if (!peerData['$endpointId']) {
-                        peerData['$endpointId'] = {
-                            key: '$endpointId',
-                            initials: '$initials',
-                            name: '$safeName',
-                            mode: 'direct',
-                            distanceMeters: 10,
-                            note: 'Direct Wi-Fi P2P',
-                            trusted: false,
-                            blocked: false,
-                            messages: []
-                        };
-                    }
+
+                    peerData['$endpointId'] = {
+                        key: '$endpointId',
+                        initials: '$initials',
+                        name: '$safeName',
+                        mode: 'direct',
+                        distanceMeters: 10,
+                        note: 'Direct Wi-Fi P2P',
+                        trusted: wasTrusted,
+                        blocked: wasBlocked,
+                        messages: savedMessages
+                    };
+                    saveState(true);
                     refreshAllLists();
-                }
+                    if (wasBlocked) return 'BLOCKED';
+                    return wasTrusted ? 'TRUSTED' : 'UNTRUSTED';
+                })();
             """.trimIndent()
-            runOnUiThread { webView.evaluateJavascript(ensurePeerJs, null) }
 
-            // Phone A (Sender): auto-accept our side and wait for Phone B to tap Accept
-            if (outgoingRequests.contains(endpointId) || !info.isIncomingConnection) {
-                connectionsClient.acceptConnection(endpointId, payloadCallback)
-                return
+            runOnUiThread {
+                webView.evaluateJavascript(syncAndCheckTrustedJs) { status ->
+                    if (status != null && status.contains("BLOCKED")) {
+                        connectionsClient.rejectConnection(endpointId)
+                        return@evaluateJavascript
+                    }
+
+                    val alreadyTrusted = status != null && status.contains("TRUSTED")
+
+                    // Phone A (Sender who tapped Connect) OR already trusted friend: auto-accept our side!
+                    if (outgoingRequests.contains(endpointId) || !isIncoming || alreadyTrusted) {
+                        connectionsClient.acceptConnection(endpointId, payloadCallback)
+                        return@evaluateJavascript
+                    }
+
+                    // Phone B (Receiver of a brand new connection request): Open Accept/Reject popup ONLY here!
+                    val receiverPopupJs = """
+                        if (typeof window.incomingQueue !== 'undefined') {
+                            window.incomingQueue = window.incomingQueue.filter(r => r.key !== '$endpointId');
+                            window.incomingQueue.push({ key: '$endpointId', name: '$safeName' });
+                            if (window.updateReqBadge) window.updateReqBadge();
+                        }
+                        showToast('🔔 Connection Request from $safeName!');
+                        window.openRequestModal('$safeName', 'Direct Wi-Fi P2P', '10m', '$endpointId', true);
+                    """.trimIndent()
+                    webView.evaluateJavascript(receiverPopupJs, null)
+                }
             }
-
-            // Phone B (Receiver): update top Req notification bar AND open Accept/Reject popup!
-            val receiverPopupJs = """
-                if (typeof window.incomingQueue !== 'undefined') {
-                    window.incomingQueue = window.incomingQueue.filter(r => r.key !== '$endpointId');
-                    window.incomingQueue.push({ key: '$endpointId', name: '$safeName' });
-                    if (window.updateReqBadge) window.updateReqBadge();
-                }
-                showToast('🔔 Connection Request from $safeName!');
-                openRequestModal('$safeName', 'Direct Wi-Fi P2P', '10m', '$endpointId');
-            """.trimIndent()
-            runOnUiThread { webView.evaluateJavascript(receiverPopupJs, null) }
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
-            outgoingRequests.remove(endpointId)
+            val wasManualRequest = outgoingRequests.remove(endpointId)
             if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
                 connectedPeers.add(endpointId)
+
+                // Flush any queued messages sent while reconnecting
+                val queued = pendingMessages.remove(endpointId)
+                queued?.forEach { rawJson ->
+                    connectionsClient.sendPayload(endpointId, Payload.fromBytes(rawJson.toByteArray(StandardCharsets.UTF_8)))
+                }
+
                 val js = """
                     if (typeof window.incomingQueue !== 'undefined') {
                         window.incomingQueue = window.incomingQueue.filter(r => r.key !== '$endpointId');
@@ -817,8 +916,10 @@ class MainActivity : AppCompatActivity() {
                         peerData['$endpointId'].note = 'Live P2P Connected';
                         saveState(true);
                         refreshAllLists();
-                        showToast('✓ Live P2P Connected with ' + peerData['$endpointId'].name);
-                        openChat('$endpointId');
+                        showToast('✓ Connected with ' + peerData['$endpointId'].name);
+                        if ($wasManualRequest) {
+                            openChat('$endpointId');
+                        }
                     }
                 """.trimIndent()
                 runOnUiThread { webView.evaluateJavascript(js, null) }
@@ -831,12 +932,12 @@ class MainActivity : AppCompatActivity() {
 
         override fun onDisconnected(endpointId: String) {
             connectedPeers.remove(endpointId)
+            // Keep trusted = true so the chat NEVER disappears from the Chats tab!
             val js = """
                 if (typeof peerData !== 'undefined' && peerData['$endpointId']) {
-                    peerData['$endpointId'].trusted = false;
-                    peerData['$endpointId'].note = 'Disconnected • Tap Chat';
+                    peerData['$endpointId'].note = 'Offline';
+                    saveState(true);
                     refreshAllLists();
-                    showToast('⚠️ Peer disconnected');
                 }
             """.trimIndent()
             runOnUiThread { webView.evaluateJavascript(js, null) }
@@ -858,6 +959,7 @@ class MainActivity : AppCompatActivity() {
                             .replace("\n", "\\n")
                         val js = """
                             if (typeof peerData !== 'undefined' && peerData['$endpointId']) {
+                                peerData['$endpointId'].trusted = true;
                                 const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                                 peerData['$endpointId'].messages.push({
                                     sender: 'them',
@@ -896,7 +998,6 @@ class MainActivity : AppCompatActivity() {
                             val progJs = "if(window.onReceiveFileProgress) window.onReceiveFileProgress('$endpointId', '$transferId', '$fileName', '$fileSize', $pct, '');"
                             runOnUiThread { webView.evaluateJavascript(progJs, null) }
                         } else {
-                            // Reassemble full DataURL and save to Downloads folder
                             Thread {
                                 val sb = StringBuilder()
                                 for (i in 0 until total) {
