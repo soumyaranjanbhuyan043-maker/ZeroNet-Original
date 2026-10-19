@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>ZeroNet P2P - Offline Mesh Messenger</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap');
+
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #05080f;
+      color: #f1f5f9;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .mono { font-family: 'JetBrains Mono', monospace; }
+    .neon-green-glow { box-shadow: 0 0 15px rgba(0, 255, 157, 0.3); }
+    .neon-blue-glow { box-shadow: 0 0 15px rgba(0, 210, 255, 0.3); }
+
+    .view-transition {
+      animation: fadeInScale 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes fadeInScale {
+      from { opacity: 0; transform: scale(0.97) translateY(6px); }
+      to { opacity: 1; transform: scale(1) translateY(0); }
+    }
+
+    .modal-animation {
+      animation: popUp 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+    }
+
+    @keyframes popUp {
+      from { opacity: 0; transform: scale(0.9); }
+      to { opacity: 1; transform: scale(1); }
+    }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: #0B0F19; }
+    ::-webkit-scrollbar-thumb { background: #1E293B; border-radius: 4px; }
+  </style>
+</head>
+<body class="flex justify-center items-center min-h-screen p-0 sm:p-4">
+
+  <!-- Hidden Inputs -->
+  <input id="realMediaInput" type="file" accept="image/*,video/*" class="hidden" onchange="handleRealFileSelected(this, 200, 'Media')" />
+  <input id="realPdfInput" type="file" accept=".pdf,.doc,.docx,.zip" class="hidden" onchange="handleRealFileSelected(this, 500, 'Document')" />
+
+  <!-- Mobile App Container -->
+  <div class="w-full max-w-[420px] h-screen sm:h-[840px] bg-[#0B0F19] sm:rounded-[32px] sm:border sm:border-slate-800 shadow-2xl flex flex-col overflow-hidden relative">
+
+    <!-- ================= SCREEN 1: ONBOARDING ================= -->
+    <div id="onboardingScreen" class="flex-1 flex flex-col justify-between p-4 sm:p-6 bg-gradient-to-b from-[#0B0F19] via-[#0E1525] to-[#0B0F19] z-20 overflow-hidden view-transition">
+      <div class="text-center pt-1">
+        <div class="w-14 h-14 rounded-2xl bg-[#00FF9D]/10 border border-[#00FF9D]/40 flex items-center justify-center mx-auto mb-2 neon-green-glow">
+          <svg class="w-7 h-7 text-[#00FF9D]" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.141 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
+          </svg>
+        </div>
+        <h1 class="text-2xl font-bold tracking-tight text-white">Zero<span class="text-[#00FF9D]">Net</span></h1>
+        <p class="text-[10px] mono text-slate-400 mt-0.5">ZERO INTERNET â€¢ ZERO SIM â€¢ ZERO ADS</p>
+      </div>
+
+      <div class="space-y-3 my-auto">
+        <div class="bg-[#131B2E] border border-slate-800 rounded-2xl p-3">
+          <label class="block text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">Your Device Nickname (Max 12 Chars)</label>
+          <input id="nicknameInput" type="text" value="" maxlength="12" placeholder="Enter name..." oninput="toggleLaunchButton()"
+            class="w-full bg-[#0B0F19] border border-slate-700 focus:border-[#00FF9D] rounded-xl px-3 py-2 text-white font-medium text-sm outline-none transition" />
+        </div>
+
+        <div class="bg-[#131B2E] border border-slate-800 rounded-2xl p-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-[#00D2FF]"></span>
+                <h3 class="text-xs font-semibold text-white">Long-Range Silent Mesh</h3>
+              </div>
+              <p class="text-[11px] text-slate-400 mt-0.5 pr-2">Relays encrypted text packets silently in RAM.</p>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer shrink-0">
+              <input id="onboardMeshToggle" type="checkbox" checked class="sr-only peer" onchange="syncMeshToggle(this.checked)">
+              <div class="w-11 h-6 bg-slate-700 rounded-full peer peer-checked:bg-[#00D2FF] after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-full"></div>
+            </label>
+          </div>
+        </div>
+
+        <div class="bg-[#131B2E]/70 border border-slate-800 rounded-2xl p-3 text-[11px] text-slate-400">
+          <label class="flex items-start gap-2 cursor-pointer">
+            <input id="termsCheckbox" type="checkbox" checked class="mt-0.5 accent-[#00FF9D] rounded" />
+            <span><strong class="text-slate-200">Privacy:</strong> 100% offline P2P. Bluetooth/Wi-Fi used strictly for local discovery.</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Launch Button stays hidden until user enters a nickname -->
+      <div class="min-h-[48px] flex items-center">
+        <button id="launchBtn" onclick="startApp()" class="hidden w-full py-3.5 rounded-2xl bg-[#00FF9D] hover:bg-[#00e68e] text-[#05080f] font-bold text-sm tracking-wide transition-all transform active:scale-95 neon-green-glow flex items-center justify-center gap-2 shrink-0 view-transition">
+          <span>Launch ZeroNet</span>
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 7l5 5m0 0l-5 5m5-5H6" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- ================= SCREEN 2: MAIN DASHBOARD ================= -->
+    <div id="mainDashboard" class="hidden flex-1 flex flex-col overflow-hidden view-transition">
+      <header class="px-3 py-3 bg-[#111827] border-b border-slate-800/80 flex items-center justify-between gap-1.5">
+        <div class="flex items-center gap-2 min-w-0 max-w-[150px] shrink-0">
+          <button onclick="editProfile()" title="Edit Nickname" class="w-8 h-8 rounded-xl bg-[#00FF9D]/10 border border-[#00FF9D]/30 flex items-center justify-center text-[#00FF9D] font-bold text-xs shrink-0 active:scale-90 transition">
+            ðŸ“¡
+          </button>
+          <div class="leading-tight min-w-0 flex-1">
+            <h2 class="font-bold text-sm tracking-tight text-white truncate">Zero<span class="text-[#00FF9D]">Net</span></h2>
+            <span id="userBadgeText" class="block text-[10px] mono text-slate-400 truncate max-w-full">@User</span>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1 shrink-0">
+          <button onclick="toggleHeaderMesh()" id="headerMeshBtn" class="px-2 py-1.5 rounded-xl text-[10px] font-semibold bg-[#00D2FF]/15 text-[#00D2FF] border border-[#00D2FF]/40 flex items-center gap-1 whitespace-nowrap transition active:scale-95">
+            <span id="headerMeshDot" class="w-2 h-2 rounded-full bg-[#00D2FF]"></span>
+            <span id="headerMeshLabel">Mesh: ON</span>
+          </button>
+
+          <button onclick="openBlockListModal()" title="Blocked Users List" class="px-2 py-1.5 rounded-xl text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 hover:bg-rose-500/25 flex items-center gap-1 whitespace-nowrap transition active:scale-95">
+            <span>ðŸš«</span>
+            <span id="blockedCountBadge" class="mono text-[10px] font-bold text-rose-200">0</span>
+          </button>
+
+          <button onclick="openRequestModal('Vikram_X9', 'Direct P2P', '35m', 'vikram')" title="Simulate Request"
+            class="px-2 py-1.5 rounded-xl text-[10px] font-semibold bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 flex items-center gap-1 whitespace-nowrap transition active:scale-95">
+            <span>ðŸ”” Req</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 2-Tab Navigation -->
+      <div class="p-2.5 bg-[#0E1422] border-b border-slate-800/80">
+        <div class="grid grid-cols-2 bg-[#131B2E] p-1 rounded-2xl border border-slate-800 text-xs font-semibold">
+          <button id="tabChatsBtn" onclick="switchTab('chats')" class="py-2.5 rounded-xl bg-[#00FF9D]/15 text-[#00FF9D] border border-[#00FF9D]/40 flex items-center justify-center gap-2 transition-all duration-200">
+            <span>ðŸ’¬ Chats</span>
+            <span id="chatTabCount" class="px-1.5 py-0.5 text-[10px] rounded-full bg-[#00FF9D] text-[#05080f] font-bold">3</span>
+          </button>
+          <button id="tabRadarBtn" onclick="switchTab('radar')" class="py-2.5 rounded-xl text-slate-400 border border-transparent flex items-center justify-center gap-2 transition-all duration-200">
+            <span>ðŸ”¢ Nearby List</span>
+            <span id="nearbyTabCount" class="px-1.5 py-0.5 text-[10px] rounded-full bg-[#00D2FF]/20 text-[#00D2FF]">5</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- TAB 1: CHATS LIST -->
+      <div id="chatsTabContent" class="flex-1 overflow-y-auto divide-y divide-slate-800/60 view-transition">
+        <div class="px-4 py-2 bg-[#131B2E]/60 flex items-center justify-between text-[11px] text-slate-400">
+          <span>ðŸŸ¢ Direct Wi-Fi (Files + Chat)</span>
+          <span>ðŸ”µ Silent Mesh (Chat Only)</span>
+        </div>
+        <div id="chatsListContainer" class="divide-y divide-slate-800/60"></div>
+      </div>
+
+      <!-- TAB 2: NUMBERED NEARBY LIST -->
+      <div id="radarTabContent" class="hidden flex-1 flex flex-col justify-between p-3.5 overflow-y-auto space-y-3 view-transition">
+        <div class="bg-[#131B2E] border border-slate-800 rounded-2xl p-3.5 flex items-center justify-between">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-[#00FF9D] animate-ping"></span>
+              <h3 class="text-xs font-bold text-white">Auto-Discovery Numbered List</h3>
+            </div>
+            <p class="text-[11px] text-slate-400 mt-1">ðŸŸ¢ 0â€“50m Direct Wi-Fi | ðŸ”µ 50m+ Silent Mesh Relay</p>
+          </div>
+          <button onclick="rescanPeers()" class="px-3 py-2 rounded-xl bg-[#00FF9D]/15 border border-[#00FF9D]/40 text-[#00FF9D] text-xs font-semibold hover:bg-[#00FF9D]/25 transition active:scale-95 flex items-center gap-1.5">
+            <span>ðŸ”„ Scan</span>
+          </button>
+        </div>
+
+        <div id="numberedNearbyContainer" class="flex-1 space-y-2.5 overflow-y-auto pr-0.5"></div>
+
+        <div class="bg-[#131B2E] border border-slate-800 rounded-2xl p-3.5 text-xs space-y-1.5">
+          <div class="flex items-center justify-between">
+            <span class="font-semibold text-white">ðŸ‘† Tap any numbered peer to Chat or Connect</span>
+            <span class="mono text-[10px] text-[#00D2FF]">RAM-Only Relay</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= SCREEN 3: CHAT SCREEN ================= -->
+    <div id="chatScreen" class="hidden flex-1 flex flex-col bg-[#0B0F19] z-20 overflow-hidden view-transition">
+      <header class="px-3 py-3 bg-[#111827] border-b border-slate-800 flex items-center justify-between gap-1">
+        <div class="flex items-center gap-2 min-w-0">
+          <button onclick="closeChat()" class="p-1.5 rounded-xl hover:bg-slate-800 text-slate-300 shrink-0 active:scale-90 transition">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
+          <div class="min-w-0">
+            <h3 id="chatPeerName" class="font-bold text-sm text-white leading-tight truncate">Priya Patel</h3>
+            <p id="chatPeerStatus" class="text-[11px] mono text-[#00FF9D] truncate">ðŸŸ¢ Direct Wi-Fi â€¢ High Speed</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button onclick="openDeleteChatModal(activePeer)" class="px-2 py-1.5 rounded-xl text-[10px] font-semibold bg-slate-800 text-slate-300 border border-slate-700 active:scale-95 transition">ðŸ—‘ï¸</button>
+          <button onclick="blockActiveChatPeer()" class="px-2 py-1.5 rounded-xl text-[10px] font-semibold bg-rose-500/15 text-rose-300 border border-rose-500/30 active:scale-95 transition">ðŸš«</button>
+        </div>
+      </header>
+
+      <div class="bg-[#131B2E]/90 px-3 py-1.5 text-center border-b border-slate-800/80">
+        <p id="chatEncryptionNotice" class="text-[10px] mono text-slate-400">ðŸ”’ End-to-End Encrypted â€¢ Zero Server â€¢ Local Storage</p>
+      </div>
+
+      <div id="chatMessages" class="flex-1 p-4 overflow-y-auto space-y-3.5"></div>
+
+      <!-- Real File Picker Drawer -->
+      <div id="attachDrawer" class="hidden px-4 py-3 bg-[#131B2E] border-t border-slate-800 grid grid-cols-2 gap-3 view-transition">
+        <button onclick="document.getElementById('realMediaInput').click()" class="p-3 rounded-xl bg-[#0B0F19] border border-slate-700 hover:border-[#00FF9D] flex items-center gap-3 text-left transition active:scale-95">
+          <span class="text-xl">ðŸ–¼ï¸</span>
+          <div>
+            <p class="text-xs font-semibold text-white">Send Media</p>
+            <p class="text-[10px] text-slate-400">Max 200MB</p>
+          </div>
+        </button>
+        <button onclick="document.getElementById('realPdfInput').click()" class="p-3 rounded-xl bg-[#0B0F19] border border-slate-700 hover:border-[#00FF9D] flex items-center gap-3 text-left transition active:scale-95">
+          <span class="text-xl">ðŸ“„</span>
+          <div>
+            <p class="text-xs font-semibold text-white">Send PDF</p>
+            <p class="text-[10px] text-slate-400">Max 500MB</p>
+          </div>
+        </button>
+      </div>
+
+      <!-- Bottom Input Bar -->
+      <div class="p-2.5 bg-[#111827] border-t border-slate-800 flex items-center gap-2 w-full box-border shrink-0">
+        <button id="attachBtn" onclick="toggleAttachDrawer()" class="w-9 h-9 rounded-xl bg-[#131B2E] border border-slate-700 flex items-center justify-center text-slate-300 hover:text-[#00FF9D] transition active:scale-90 shrink-0">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+        <input id="messageInput" type="text" placeholder="Type an offline message..."
+          onkeydown="if(event.key==='Enter') sendMessage()"
+          class="min-w-0 flex-1 bg-[#0B0F19] border border-slate-800 focus:border-[#00FF9D] rounded-xl px-3 py-2 text-xs text-white outline-none box-border" />
+        <button onclick="sendMessage()" class="px-3 py-2 rounded-xl bg-[#00FF9D] text-[#05080f] font-bold text-xs shrink-0 whitespace-nowrap active:scale-95 transition">
+          Send âž¤
+        </button>
+      </div>
+    </div>
+
+    <!-- ================= MODALS & CENTERED TOAST ================= -->
+    <div id="requestModal" class="hidden absolute inset-0 bg-black/75 backdrop-blur-sm z-50 flex items-center justify-center p-5">
+      <div class="w-full bg-[#131B2E] border border-slate-700 rounded-3xl p-5 shadow-2xl space-y-4 modal-animation">
+        <h4 class="text-base font-bold text-white">New Peer Connection Request</h4>
+        <p id="reqPeerName" class="text-slate-300 text-xs">Vikram wants to connect.</p>
+        <div class="grid grid-cols-3 gap-2 text-xs font-semibold">
+          <button onclick="closeRequestModal('blocked')" class="py-3 rounded-xl bg-rose-500/15 text-rose-400 border border-rose-500/30 active:scale-95 transition">ðŸš« Block</button>
+          <button onclick="closeRequestModal('rejected')" class="py-3 rounded-xl bg-slate-800 text-slate-300 active:scale-95 transition">Reject</button>
+          <button onclick="closeRequestModal('accepted')" class="py-3 rounded-xl bg-[#00FF9D] text-[#05080f] font-bold active:scale-95 transition">âœ“ Accept</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="blockListModal" class="hidden absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-5">
+      <div class="w-full bg-[#131B2E] border border-slate-700 rounded-3xl p-5 shadow-2xl space-y-4 max-h-[80%] flex flex-col modal-animation">
+        <h4 class="text-sm font-bold text-white">Blocked Devices List</h4>
+        <div id="blockedUsersContainer" class="flex-1 overflow-y-auto space-y-2.5 py-1"></div>
+        <button onclick="closeBlockListModal()" class="w-full py-3 rounded-xl bg-slate-800 text-xs font-semibold text-slate-200 active:scale-95 transition">Done</button>
+      </div>
+    </div>
+
+    <div id="deleteChatModal" class="hidden absolute inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-5">
+      <div class="w-full bg-[#131B2E] border border-slate-700 rounded-3xl p-5 shadow-2xl space-y-4 modal-animation">
+        <h4 class="text-base font-bold text-white">Delete All Chat Messages?</h4>
+        <div class="grid grid-cols-2 gap-2.5 text-xs font-semibold">
+          <button onclick="closeDeleteChatModal()" class="py-3 rounded-xl bg-slate-800 text-slate-300 active:scale-95 transition">Cancel</button>
+          <button onclick="confirmDeleteChat()" class="py-3 rounded-xl bg-rose-500 text-white font-bold active:scale-95 transition">Delete All</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- PERFECTLY CENTERED TOAST NOTIFICATION -->
+    <div id="toastBox" class="hidden absolute bottom-20 left-1/2 -translate-x-1/2 bg-[#111827] border border-slate-700 text-white text-xs px-4 py-2.5 rounded-full shadow-2xl z-50 text-center whitespace-nowrap modal-animation"></div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "zeronet_p2p_chunk_progress_v9";
+    let currentUser = "";
+    let meshEnabled = true;
+    let activePeer = "priya";
+    let pendingReqKey = "vikram";
+    let pendingDeletePeerKey = null;
+
+    // ================= HARDWARE BACK BUTTON NAVIGATION STACK =================
+    let navStack = [];
+    let silentBackCount = 0;
+
+    function pushBackState(layerName) {
+      if (navStack[navStack.length - 1] !== layerName) {
+        navStack.push(layerName);
+        try { history.pushState({ layer: layerName }, ""); } catch (e) {}
+      }
+    }
+
+    function popBackState(layerName) {
+      const idx = navStack.lastIndexOf(layerName);
+      if (idx !== -1) {
+        const countToPop = navStack.length - idx;
+        navStack.splice(idx, countToPop);
+        silentBackCount++;
+        try { history.go(-countToPop); } catch (e) { silentBackCount = 0; }
+      }
+    }
+
+    window.addEventListener('popstate', function () {
+      if (silentBackCount > 0) {
+        silentBackCount--;
+        return;
+      }
+      if (navStack.length === 0) return;
+
+      const poppedLayer = navStack.pop();
+      if (poppedLayer === 'deleteModal') {
+        closeDeleteChatModal(true);
+      } else if (poppedLayer === 'blockModal') {
+        closeBlockListModal(true);
+      } else if (poppedLayer === 'reqModal') {
+        closeRequestModal('rejected', true);
+      } else if (poppedLayer === 'attach') {
+        document.getElementById('attachDrawer').classList.add('hidden');
+      } else if (poppedLayer === 'chat') {
+        closeChat(true);
+      } else if (poppedLayer === 'radar') {
+        switchTab('chats', true);
+      } else if (poppedLayer === 'editProfile') {
+        document.getElementById('onboardingScreen').classList.add('hidden');
+        document.getElementById('mainDashboard').classList.remove('hidden');
+      }
+    });
+    // =========================================================================
+
+    const defaultPeerData = {
+      rahul: { key: "rahul", initials: "RS", name: "Rahul Sharma", mode: "direct", distanceMeters: 18, note: "Direct Wi-Fi", trusted: true, blocked: false, messages: [{ sender: "me", text: "Sent photos." }] },
+      priya: { key: "priya", initials: "PP", name: "Priya Patel", mode: "direct", distanceMeters: 32, note: "Direct Wi-Fi", trusted: true, blocked: false, messages: [{ sender: "them", text: "Send notes." }] },
+      vikram: { key: "vikram", initials: "VX", name: "Vikram_X9", mode: "direct", distanceMeters: 35, note: "Untrusted", trusted: false, blocked: false, messages: [] },
+      amit: { key: "amit", initials: "AV", name: "Amit Verma", mode: "mesh", distanceMeters: 145, note: "Mesh via Priya", trusted: true, blocked: false, messages: [{ sender: "them", text: "Connected via Mesh!" }] }
+    };
+
+    let peerData = {};
+
+    function toggleLaunchButton() {
+      const val = document.getElementById('nicknameInput').value.trim();
+      const btn = document.getElementById('launchBtn');
+      if (val.length > 0) {
+        btn.classList.remove('hidden');
+      } else {
+        btn.classList.add('hidden');
+      }
+    }
+
+    function loadSavedState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          currentUser = parsed.currentUser || "";
+          meshEnabled = parsed.meshEnabled !== undefined ? parsed.meshEnabled : true;
+          peerData = parsed.peerData || defaultPeerData;
+          document.getElementById('nicknameInput').value = currentUser;
+          document.getElementById('onboardMeshToggle').checked = meshEnabled;
+          updateMeshHeaderUI();
+          toggleLaunchButton();
+
+          if (parsed.isInitialized && currentUser.length > 0) {
+            document.getElementById('userBadgeText').innerText = `@${currentUser}`;
+            document.getElementById('onboardingScreen').classList.add('hidden');
+            document.getElementById('mainDashboard').classList.remove('hidden');
+            refreshAllLists();
+          }
+        } else {
+          peerData = JSON.parse(JSON.stringify(defaultPeerData));
+          document.getElementById('nicknameInput').value = "";
+          toggleLaunchButton();
+        }
+      } catch (e) {
+        peerData = JSON.parse(JSON.stringify(defaultPeerData));
+        document.getElementById('nicknameInput').value = "";
+        toggleLaunchButton();
+      }
+    }
+
+    function saveState(isInit = true) {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({ currentUser, meshEnabled, peerData, isInitialized: isInit }));
+      } catch (e) {}
+    }
+
+    window.onload = function() { loadSavedState(); };
+
+    function startApp() {
+      const val = document.getElementById('nicknameInput').value.trim();
+      if (!val) {
+        showToast("âš ï¸ Please enter your nickname first!");
+        return;
+      }
+      currentUser = val;
+      document.getElementById('userBadgeText').innerText = `@${currentUser}`;
+      document.getElementById('onboardingScreen').classList.add('hidden');
+      document.getElementById('mainDashboard').classList.remove('hidden');
+      if (navStack.includes('editProfile')) popBackState('editProfile');
+      saveState(true);
+      refreshAllLists();
+    }
+
+    function editProfile() {
+      document.getElementById('mainDashboard').classList.add('hidden');
+      document.getElementById('onboardingScreen').classList.remove('hidden');
+      toggleLaunchButton();
+      pushBackState('editProfile');
+    }
+
+    function refreshAllLists() {
+      renderChatsList();
+      renderNumberedNearbyList();
+      updateBlockedBadge();
+    }
+
+    function renderChatsList() {
+      const container = document.getElementById('chatsListContainer');
+      container.innerHTML = '';
+      const trustedPeers = Object.values(peerData).filter(p => p.trusted && !p.blocked);
+      document.getElementById('chatTabCount').innerText = trustedPeers.length;
+
+      if (!trustedPeers.length) {
+        container.innerHTML = `<div class="p-8 text-center text-xs text-slate-400">No active chats.</div>`;
+        return;
+      }
+
+      trustedPeers.forEach(peer => {
+        const isDirect = peer.mode === 'direct';
+        const badgeColor = isDirect ? 'text-[#00FF9D]' : 'text-[#00D2FF]';
+        const avatarStyle = isDirect ? 'bg-emerald-500/15 border-[#00FF9D]/50 text-[#00FF9D]' : 'bg-sky-500/15 border-[#00D2FF]/50 text-[#00D2FF]';
+        
+        let lastText = 'No messages';
+        if (peer.messages.length) {
+          const lastMsg = peer.messages[peer.messages.length - 1];
+          lastText = lastMsg.text || (lastMsg.fileInfo ? `ðŸ“Ž ${lastMsg.fileInfo.name}` : 'No messages');
+        }
+
+        container.innerHTML += `
+          <div onclick="openChat('${peer.key}')" class="p-4 hover:bg-[#131B2E]/60 cursor-pointer transition active:scale-[0.98] flex items-center gap-3.5">
+            <div class="w-12 h-12 rounded-2xl border flex items-center justify-center font-bold text-base ${avatarStyle}">${peer.initials}</div>
+            <div class="flex-1 min-w-0">
+              <div class="flex justify-between items-baseline">
+                <h3 class="font-semibold text-white truncate">${peer.name}</h3>
+                <span class="text-[11px] mono ${badgeColor}">${isDirect ? 'Direct' : 'Mesh'} â€¢ ${peer.distanceMeters}m</span>
+              </div>
+              <p class="text-xs text-slate-300 truncate mt-0.5">${lastText}</p>
+            </div>
+            <button onclick="event.stopPropagation(); openDeleteChatModal('${peer.key}')" class="p-2.5 rounded-xl bg-slate-800/70 text-slate-400 hover:text-rose-300 text-xs active:scale-90 transition">ðŸ—‘ï¸</button>
+          </div>
+        `;
+      });
+    }
+
+    function renderNumberedNearbyList() {
+      const container = document.getElementById('numberedNearbyContainer');
+      container.innerHTML = '';
+      const visiblePeers = Object.values(peerData).filter(p => !p.blocked && (meshEnabled || p.mode === 'direct')).sort((a, b) => a.distanceMeters - b.distanceMeters);
+      document.getElementById('nearbyTabCount').innerText = visiblePeers.length;
+
+      visiblePeers.forEach((peer, index) => {
+        const isDirect = peer.mode === 'direct';
+        const numBadgeStyle = isDirect ? 'bg-[#00FF9D]/15 border-[#00FF9D]/50 text-[#00FF9D]' : 'bg-[#00D2FF]/15 border-[#00D2FF]/50 text-[#00D2FF]';
+        const actionBtn = peer.trusted 
+          ? `<button onclick="openChat('${peer.key}')" class="px-3 py-1.5 rounded-xl bg-[#00FF9D] text-[#05080f] font-bold text-xs active:scale-95 transition">Chat</button>` 
+          : `<button onclick="openRequestModal('${peer.name}', '${peer.key}')" class="px-3 py-1.5 rounded-xl bg-[#00D2FF]/20 text-[#00D2FF] font-semibold text-xs active:scale-95 transition">Connect</button>`;
+
+        container.innerHTML += `
+          <div class="bg-[#131B2E] border border-slate-800 rounded-2xl p-3 flex items-center justify-between gap-3 transition hover:border-slate-700">
+            <div class="flex items-center gap-3 min-w-0">
+              <div class="w-10 h-10 rounded-xl border flex flex-col items-center justify-center shrink-0 ${numBadgeStyle}">
+                <span class="text-sm font-bold mono">#${index + 1}</span>
+              </div>
+              <div class="min-w-0">
+                <h4 class="font-bold text-sm text-white truncate">${peer.name}</h4>
+                <p class="text-[11px] mono text-slate-400 mt-0.5">${peer.distanceMeters}m away â€¢ ${peer.note}</p>
+              </div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              ${actionBtn}
+              <button onclick="blockUserByKey('${peer.key}')" class="p-2 rounded-xl bg-rose-500/10 text-rose-400 text-xs active:scale-90 transition">ðŸš«</button>
+            </div>
+          </div>
+        `;
+      });
+    }
+
+    function switchTab(tab, fromBack = false) {
+      const chatsTab = document.getElementById('chatsTabContent');
+      const radarTab = document.getElementById('radarTabContent');
+      const chatsBtn = document.getElementById('tabChatsBtn');
+      const radarBtn = document.getElementById('tabRadarBtn');
+
+      if (tab === 'chats') {
+        chatsTab.classList.remove('hidden');
+        radarTab.classList.add('hidden');
+        chatsBtn.className = "py-2.5 rounded-xl bg-[#00FF9D]/15 text-[#00FF9D] border border-[#00FF9D]/40 flex items-center justify-center gap-2 transition-all duration-200";
+        radarBtn.className = "py-2.5 rounded-xl text-slate-400 border border-transparent flex items-center justify-center gap-2 transition-all duration-200";
+        if (!fromBack) popBackState('radar');
+      } else {
+        chatsTab.classList.add('hidden');
+        radarTab.classList.remove('hidden');
+        radarBtn.className = "py-2.5 rounded-xl bg-[#00D2FF]/15 text-[#00D2FF] border border-[#00D2FF]/40 flex items-center justify-center gap-2 transition-all duration-200";
+        chatsBtn.className = "py-2.5 rounded-xl text-slate-400 border border-transparent flex items-center justify-center gap-2 transition-all duration-200";
+        if (!fromBack) pushBackState('radar');
+      }
+    }
+
+    function openChat(key) {
+      activePeer = key;
+      const peer = peerData[key];
+
+      if (navStack.length === 1 && navStack[0] === 'radar') {
+        switchTab('chats', true);
+        navStack[0] = 'chat';
+        try { history.replaceState({ layer: 'chat' }, ""); } catch (e) {}
+      } else {
+        switchTab('chats', true);
+        pushBackState('chat');
+      }
+
+      document.getElementById('mainDashboard').classList.add('hidden');
+      document.getElementById('chatScreen').classList.remove('hidden');
+      document.getElementById('chatPeerName').innerText = peer.name;
+
+      const attachBtn = document.getElementById('attachBtn');
+      const attachDrawer = document.getElementById('attachDrawer');
+      attachDrawer.classList.add('hidden');
+
+      if (peer.mode === 'direct') {
+        attachBtn.classList.remove('hidden');
+        document.getElementById('chatPeerStatus').innerText = "ðŸŸ¢ Direct Wi-Fi â€¢ File & Chat Enabled";
+      } else {
+        attachBtn.classList.add('hidden');
+        document.getElementById('chatPeerStatus').innerText = "ðŸ”µ Silent Mesh â€¢ Chat Only (No Files)";
+      }
+
+      renderMessages();
+    }
+
+    function closeChat(fromBack = false) {
+      document.getElementById('attachDrawer').classList.add('hidden');
+      document.getElementById('chatScreen').classList.add('hidden');
+      document.getElementById('mainDashboard').classList.remove('hidden');
+      refreshAllLists();
+      if (!fromBack) popBackState('chat');
+    }
+
+    function renderMessages() {
+      const container = document.getElementById('chatMessages');
+      const peer = peerData[activePeer];
+      container.innerHTML = '';
+      
+      peer.messages.forEach((m, idx) => {
+        if (m.text) {
+          container.innerHTML += `<div class="flex ${m.sender === 'me' ? 'justify-end' : 'justify-start'}"><div class="max-w-[80%] px-3 py-2 text-xs rounded-xl ${m.sender === 'me' ? 'bg-[#00FF9D]/20 text-white' : 'bg-[#131B2E] text-slate-200'}">${m.text}</div></div>`;
+        } else if (m.fileInfo) {
+          const prog = m.fileInfo.progress || 100;
+          const isDone = prog >= 100;
+          container.innerHTML += `
+            <div class="flex ${m.sender === 'me' ? 'justify-end' : 'justify-start'}">
+              <div class="max-w-[85%] w-[260px] bg-[#131B2E] border border-slate-700/80 p-3 rounded-2xl space-y-2 shadow-lg">
+                <div class="flex items-center gap-2.5">
+                  <span class="text-xl">${m.fileInfo.type === 'Media' ? 'ðŸ–¼ï¸' : 'ðŸ“„'}</span>
+                  <div class="min-w-0 flex-1">
+                    <p class="text-xs font-bold text-white truncate">${m.fileInfo.name}</p>
+                    <p class="text-[10px] mono text-slate-400">${m.fileInfo.sizeLabel} â€¢ ${isDone ? 'Completed' : 'Transferring chunks...'}</p>
+                  </div>
+                  <span class="text-xs font-bold mono text-[#00FF9D]">${prog}%</span>
+                </div>
+                <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                  <div class="bg-[#00FF9D] h-full transition-all duration-150" style="width: ${prog}%"></div>
+                </div>
+              </div>
+            </div>
+          `;
+        }
+      });
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function sendMessage() {
+      const input = document.getElementById('messageInput');
+      if (!input.value.trim()) return;
+      peerData[activePeer].messages.push({ sender: 'me', text: input.value.trim() });
+      input.value = '';
+      saveState(true);
+      renderMessages();
+    }
+
+    function toggleAttachDrawer() {
+      const peer = peerData[activePeer];
+      if (peer.mode !== 'direct') {
+        showToast("âš ï¸ Files can only be sent over Direct Wi-Fi chats!");
+        return;
+      }
+      const d = document.getElementById('attachDrawer');
+      const isOpening = d.classList.contains('hidden');
+      d.classList.toggle('hidden');
+      if (isOpening) {
+        pushBackState('attach');
+      } else {
+        popBackState('attach');
+      }
+    }
+
+    // REAL CHUNK PROGRESS SIMULATION WITH STRICT SIZE LIMIT CHECK
+    function handleRealFileSelected(inputElement, limitMB, typeLabel) {
+      if (inputElement.files && inputElement.files[0]) {
+        const file = inputElement.files[0];
+        const fileSizeMB = file.size / (1024 * 1024);
+        toggleAttachDrawer();
+
+        if (fileSizeMB > limitMB) {
+          showToast(`âš ï¸ Limit Exceeded (${fileSizeMB.toFixed(1)} MB)! Max allowed is ${limitMB} MB.`);
+          inputElement.value = '';
+          return;
+        }
+
+        const fileObj = {
+          sender: 'me',
+          fileInfo: {
+            name: file.name,
+            type: typeLabel,
+            sizeLabel: fileSizeMB.toFixed(1) + ' MB',
+            progress: 5
+          }
+        };
+
+        peerData[activePeer].messages.push(fileObj);
+        saveState(true);
+        renderMessages();
+        showToast(`ðŸš€ Starting ${typeLabel} transmission...`);
+
+        let currentProg = 5;
+        const msgIndex = peerData[activePeer].messages.length - 1;
+
+        const interval = setInterval(() => {
+          currentProg += Math.floor(Math.random() * 20) + 15;
+          if (currentProg >= 100) {
+            currentProg = 100;
+            clearInterval(interval);
+            showToast(`âœ“ ${typeLabel} shared successfully!`);
+          }
+          peerData[activePeer].messages[msgIndex].fileInfo.progress = currentProg;
+          saveState(true);
+          renderMessages();
+        }, 300);
+
+        inputElement.value = '';
+      }
+    }
+
+    function openRequestModal(name, key) {
+      pendingReqKey = arguments.length >= 4 ? arguments[3] : key;
+      document.getElementById('reqPeerName').innerText = `${name} wants to connect with you.`;
+      document.getElementById('requestModal').classList.remove('hidden');
+      pushBackState('reqModal');
+    }
+
+    function closeRequestModal(action, fromBack = false) {
+      document.getElementById('requestModal').classList.add('hidden');
+      if (!fromBack) popBackState('reqModal');
+      if (action === 'accepted' && peerData[pendingReqKey]) {
+        peerData[pendingReqKey].trusted = true;
+        peerData[pendingReqKey].blocked = false;
+        saveState(true);
+        refreshAllLists();
+        showToast("âœ“ Connected successfully!");
+      } else if (action === 'blocked' && peerData[pendingReqKey]) {
+        peerData[pendingReqKey].blocked = true;
+        peerData[pendingReqKey].trusted = false;
+        saveState(true);
+        refreshAllLists();
+        showToast("ðŸš« Peer blocked!");
+      } else if (action === 'rejected') {
+        showToast("âœ– Connection request rejected.");
+      }
+    }
+
+    function openDeleteChatModal(key) {
+      pendingDeletePeerKey = key;
+      document.getElementById('deleteChatModal').classList.remove('hidden');
+      pushBackState('deleteModal');
+    }
+
+    function closeDeleteChatModal(fromBack = false) {
+      pendingDeletePeerKey = null;
+      document.getElementById('deleteChatModal').classList.add('hidden');
+      if (!fromBack) popBackState('deleteModal');
+    }
+
+    function confirmDeleteChat() {
+      if (pendingDeletePeerKey && peerData[pendingDeletePeerKey]) {
+        peerData[pendingDeletePeerKey].messages = [];
+        saveState(true);
+        refreshAllLists();
+        if (!document.getElementById('chatScreen').classList.contains('hidden')) {
+          renderMessages();
+        }
+      }
+      closeDeleteChatModal();
+    }
+
+    function blockUserByKey(key) { peerData[key].blocked = true; saveState(true); refreshAllLists(); }
+    function blockActiveChatPeer() { peerData[activePeer].blocked = true; saveState(true); closeChat(); refreshAllLists(); }
+    function unblockUser(key) { peerData[key].blocked = false; saveState(true); openBlockListModal(); refreshAllLists(); }
+    function updateBlockedBadge() { document.getElementById('blockedCountBadge').innerText = Object.values(peerData).filter(p => p.blocked).length; }
+
+    function openBlockListModal() {
+      const container = document.getElementById('blockedUsersContainer');
+      const blocked = Object.values(peerData).filter(p => p.blocked);
+      container.innerHTML = blocked.length ? '' : `<p class="text-xs text-slate-400 text-center py-4">No blocked users.</p>`;
+      blocked.forEach(p => {
+        container.innerHTML += `<div class="bg-[#0B0F19] p-3 rounded-xl flex justify-between items-center text-xs"><span class="text-white">${p.name}</span><button onclick="unblockUser('${p.key}')" class="text-[#00FF9D]">Unblock</button></div>`;
+      });
+      document.getElementById('blockListModal').classList.remove('hidden');
+      pushBackState('blockModal');
+    }
+
+    function closeBlockListModal(fromBack = false) {
+      document.getElementById('blockListModal').classList.add('hidden');
+      if (!fromBack) popBackState('blockModal');
+    }
+
+    function syncMeshToggle(val) { meshEnabled = val; saveState(true); }
+    function toggleHeaderMesh() { meshEnabled = !meshEnabled; updateMeshHeaderUI(); saveState(true); refreshAllLists(); }
+    function updateMeshHeaderUI() {
+      document.getElementById('headerMeshLabel').innerText = meshEnabled ? "Mesh: ON" : "Mesh: OFF";
+    }
+    function rescanPeers() { showToast("ðŸ”„ Scanning channels..."); refreshAllLists(); }
+
+    function showToast(msg) {
+      const t = document.getElementById('toastBox');
+      t.innerText = msg;
+      t.classList.remove('hidden');
+      setTimeout(() => t.classList.add('hidden'), 2500);
+    }
+  </script>
+</body>
+</html>
