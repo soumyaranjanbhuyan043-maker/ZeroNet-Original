@@ -7,6 +7,8 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
+import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
@@ -21,8 +23,11 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.nearby.Nearby
 import com.google.android.gms.nearby.connection.*
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.nio.charset.Charset
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
 
 class MainActivity : AppCompatActivity() {
 
@@ -31,8 +36,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectionsClient: ConnectionsClient
     private val SERVICE_ID = "com.soumya.zeronet.MESH_SERVICE"
     private var myNickname = "ZeroNetUser"
-    private val connectedPeers = mutableSetOf<String>()
-    private val outgoingRequests = mutableSetOf<String>()
+
+    private val connectedPeers = ConcurrentHashMap.newKeySet<String>()
+    private val outgoingRequests = ConcurrentHashMap.newKeySet<String>()
+    private val incomingFileChunks = ConcurrentHashMap<String, ConcurrentHashMap<Int, String>>()
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -354,25 +361,52 @@ class MainActivity : AppCompatActivity() {
                 if (window.nativeHooked) return;
                 window.nativeHooked = true;
 
-                // 1. Remove all 4 prototype demo peers permanently
+                window.incomingQueue = [];
+
+                // 1. Delete all 4 demo peers & reset stale connections on boot
                 const demoKeys = ['rahul', 'priya', 'vikram', 'amit'];
                 if (typeof defaultPeers !== 'undefined') {
                     demoKeys.forEach(k => delete defaultPeers[k]);
                 }
                 if (typeof peerData !== 'undefined') {
                     demoKeys.forEach(k => delete peerData[k]);
+                    Object.keys(peerData).forEach(k => {
+                        peerData[k].trusted = false;
+                        peerData[k].note = 'Offline • Tap Scan';
+                    });
                     saveState(true);
                     refreshAllLists();
                 }
 
-                // 2. Fix top 'Req' button so it doesn't open fake Vikram_X9 demo modal
-                const reqBtns = document.querySelectorAll('button');
-                reqBtns.forEach(btn => {
-                    const onclickAttr = btn.getAttribute('onclick') || '';
-                    if (onclickAttr.includes('Vikram_X9')) {
-                        btn.setAttribute('onclick', "showToast('🔔 Waiting for nearby peer requests...')");
-                    }
-                });
+                // 2. Wire up the top 'Req' notification button to show real incoming requests
+                window.updateReqBadge = function() {
+                    const btns = document.querySelectorAll('button');
+                    btns.forEach(btn => {
+                        const txt = btn.innerText || '';
+                        const onclickAttr = btn.getAttribute('onclick') || '';
+                        if (txt.includes('Req') || onclickAttr.includes('Vikram_X9')) {
+                            btn.removeAttribute('onclick');
+                            if (window.incomingQueue.length > 0) {
+                                btn.innerHTML = '🔔 Req (' + window.incomingQueue.length + ')';
+                                btn.style.borderColor = '#00FF9D';
+                                btn.style.color = '#00FF9D';
+                            } else {
+                                btn.innerHTML = '🔔 Req';
+                                btn.style.borderColor = '';
+                                btn.style.color = '';
+                            }
+                            btn.onclick = function() {
+                                if (window.incomingQueue.length > 0) {
+                                    const req = window.incomingQueue[0];
+                                    openRequestModal(req.name, 'Direct Wi-Fi P2P', '10m', req.key);
+                                } else {
+                                    showToast('🔔 No pending connection requests');
+                                }
+                            };
+                        }
+                    });
+                };
+                window.updateReqBadge();
 
                 // 3. Hardware Back Stack sync
                 window.pushBackState = function(layerName) {
@@ -380,7 +414,6 @@ class MainActivity : AppCompatActivity() {
                         navStack.push(layerName);
                     }
                 };
-
                 window.popBackState = function(layerName) {
                     const idx = navStack.lastIndexOf(layerName);
                     if (idx !== -1) {
@@ -395,42 +428,76 @@ class MainActivity : AppCompatActivity() {
                     demoKeys.forEach(k => delete peerData[k]);
                     saveState(true);
                     refreshAllLists();
-                    if (window.AndroidBridge && currentUser) {
+                    if (window.AndroidBridge && typeof currentUser !== 'undefined' && currentUser) {
                         window.AndroidBridge.startMeshEngine(currentUser);
                     }
                 };
 
-                // 5. Real scan button
+                // 5. Real Scan button
                 window.rescanPeers = function() {
                     demoKeys.forEach(k => delete peerData[k]);
                     refreshAllLists();
-                    showToast('📡 Scanning real nearby devices...');
-                    if (window.AndroidBridge && currentUser) {
+                    showToast('📡 Scanning nearby devices...');
+                    if (window.AndroidBridge && typeof currentUser !== 'undefined' && currentUser) {
                         window.AndroidBridge.rescanNearby(currentUser);
                     }
                 };
 
-                // 6. Connect to discovered real peer when tapping 'Chat' in Nearby List
+                // 6. FIXED: Tapping 'Chat' sends request to OTHER phone (never opens modal on your own phone!)
                 window.handlePeerAction = function(key) {
                     const p = peerData[key];
                     if (!p || p.blocked) return;
-                    if (!p.trusted) {
+                    const isLive = window.AndroidBridge && window.AndroidBridge.isPeerConnected(key);
+                    if (!isLive) {
+                        p.trusted = false;
+                        showToast('📨 Request sent to ' + p.name + '... Waiting for them to Accept');
                         if (window.AndroidBridge) {
-                            showToast('🔗 Sending connection request to ' + p.name + '...');
                             window.AndroidBridge.connectToPeer(key);
                         }
-                    } else {
-                        openChat(key);
+                        return;
                     }
+                    p.trusted = true;
+                    openChat(key);
                 };
 
-                // 7. Real P2P message sending (without fake 900ms demo auto-reply)
+                // Also guard openChat so it only opens if live connected
+                const origOpenChat = window.openChat;
+                window.openChat = function(key) {
+                    const p = peerData[key];
+                    if (!p) return;
+                    const isLive = window.AndroidBridge && window.AndroidBridge.isPeerConnected(key);
+                    if (!isLive) {
+                        showToast('📨 Connecting to ' + p.name + '... Ask them to Accept!');
+                        if (window.AndroidBridge) {
+                            window.AndroidBridge.connectToPeer(key);
+                        }
+                        return;
+                    }
+                    if (origOpenChat) origOpenChat(key);
+                };
+
+                // 7. FIXED: Real P2P Message Send (no fake demo reply)
                 window.sendMessage = function() {
                     const input = document.getElementById('messageInput');
                     const text = input ? input.value.trim() : '';
-                    if (!text || !activePeer || !peerData[activePeer]) return;
+                    if (!text || typeof activePeer === 'undefined' || !activePeer || !peerData[activePeer]) return;
 
-                    peerData[activePeer].messages.push({ sender: 'me', text: text });
+                    const isLive = window.AndroidBridge && window.AndroidBridge.isPeerConnected(activePeer);
+                    if (!isLive) {
+                        showToast('⚠️ Not connected! Reconnecting to peer...');
+                        if (window.AndroidBridge) window.AndroidBridge.connectToPeer(activePeer);
+                        return;
+                    }
+
+                    const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                    peerData[activePeer].messages.push({
+                        sender: 'me',
+                        from: 'me',
+                        mine: true,
+                        type: 'text',
+                        text: text,
+                        time: nowTime
+                    });
                     input.value = '';
                     saveState(true);
                     renderMessages();
@@ -441,28 +508,71 @@ class MainActivity : AppCompatActivity() {
                     }
                 };
 
-                // 8. Real P2P File & Media sending
-                const origHandleFile = window.handleFileSelect;
-                window.handleFileSelect = function(input, kind) {
-                    const file = input.files && input.files[0];
-                    if (file && activePeer && window.AndroidBridge && file.size <= 15 * 1024 * 1024) {
-                        const reader = new FileReader();
-                        reader.onload = function(evt) {
-                            window.AndroidBridge.sendP2PFile(activePeer, file.name, kind, evt.target.result);
-                        };
-                        reader.readAsDataURL(file);
+                // 8. FIXED: Capture any File / Photo / PDF selection and stream in 16KB chunks to other phone
+                document.addEventListener('change', function(e) {
+                    if (e.target && e.target.type === 'file' && e.target.files && e.target.files[0]) {
+                        const file = e.target.files[0];
+                        if (typeof activePeer !== 'undefined' && activePeer && window.AndroidBridge) {
+                            const isLive = window.AndroidBridge.isPeerConnected(activePeer);
+                            if (!isLive) {
+                                showToast('⚠️ Connect with peer first before sending files!');
+                                return;
+                            }
+                            const sizeMB = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+                            const reader = new FileReader();
+                            reader.onload = function(evt) {
+                                const dataUrl = evt.target.result;
+                                window.AndroidBridge.sendP2PFile(activePeer, file.name, sizeMB, 'File', dataUrl);
+                            };
+                            reader.readAsDataURL(file);
+                        }
                     }
-                    if (origHandleFile) origHandleFile(input, kind);
-                };
+                }, true);
 
-                // 9. Accept / Reject / Block real connection request
+                // 9. FIXED: Accept / Reject / Block real incoming connection request
                 const origCloseReq = window.closeRequestModal;
                 window.closeRequestModal = function(action, fromBack) {
-                    const targetKey = pendingReqKey;
+                    const targetKey = typeof pendingReqKey !== 'undefined' ? pendingReqKey : null;
+                    if (targetKey) {
+                        window.incomingQueue = window.incomingQueue.filter(r => r.key !== targetKey);
+                        window.updateReqBadge();
+                    }
                     if (origCloseReq) origCloseReq(action, fromBack);
                     if (window.AndroidBridge && targetKey) {
-                        if (action === 'accepted') window.AndroidBridge.respondToPeer(targetKey, true);
-                        else if (action === 'rejected' || action === 'blocked') window.AndroidBridge.respondToPeer(targetKey, false);
+                        if (action === 'accepted') {
+                            window.AndroidBridge.respondToPeer(targetKey, true);
+                        } else if (action === 'rejected' || action === 'blocked') {
+                            window.AndroidBridge.respondToPeer(targetKey, false);
+                        }
+                    }
+                };
+
+                // 10. Helper to render incoming or updating file cards on receiver phone
+                window.onReceiveFileProgress = function(peerKey, transferId, fileName, fileSize, pct, savedPath) {
+                    const p = peerData[peerKey];
+                    if (!p) return;
+                    let msg = p.messages.find(m => m.transferId === transferId);
+                    const statusText = pct >= 100
+                        ? ('📎 ' + fileName + ' (' + fileSize + ') • ✓ Saved to Downloads')
+                        : ('📥 Receiving ' + fileName + ' (' + fileSize + ') • ' + pct + '%');
+                    if (!msg) {
+                        msg = {
+                            transferId: transferId,
+                            sender: 'them',
+                            from: 'them',
+                            mine: false,
+                            type: 'text',
+                            text: statusText,
+                            time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        };
+                        p.messages.push(msg);
+                    } else {
+                        msg.text = statusText;
+                    }
+                    saveState(true);
+                    refreshAllLists();
+                    if (typeof activePeer !== 'undefined' && activePeer === peerKey) {
+                        renderMessages();
                     }
                 };
 
@@ -482,6 +592,8 @@ class MainActivity : AppCompatActivity() {
                 connectionsClient.stopAllEndpoints()
                 connectionsClient.stopDiscovery()
                 connectionsClient.stopAdvertising()
+                connectedPeers.clear()
+                outgoingRequests.clear()
                 startAdvertising()
                 startDiscovery()
             }
@@ -499,11 +611,21 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
+        fun isPeerConnected(endpointId: String): Boolean {
+            return connectedPeers.contains(endpointId)
+        }
+
+        @JavascriptInterface
         fun connectToPeer(endpointId: String) {
             runOnUiThread {
                 if (!connectedPeers.contains(endpointId)) {
                     outgoingRequests.add(endpointId)
                     connectionsClient.requestConnection(myNickname, endpointId, connectionLifecycleCallback)
+                        .addOnFailureListener {
+                            outgoingRequests.remove(endpointId)
+                            // If already requesting or link busy, retry discovery handshake
+                            webView.evaluateJavascript("showToast('🔄 Retrying connection request...');", null)
+                        }
                 }
             }
         }
@@ -520,16 +642,41 @@ class MainActivity : AppCompatActivity() {
         }
 
         @JavascriptInterface
-        fun sendP2PFile(peerKey: String, fileName: String, kind: String, dataUrl: String) {
-            val json = JSONObject().apply {
-                put("type", "file")
-                put("senderName", myNickname)
-                put("fileName", fileName)
-                put("kind", kind)
-                put("dataUrl", dataUrl)
-            }
-            val bytes = json.toString().toByteArray(StandardCharsets.UTF_8)
-            connectionsClient.sendPayload(peerKey, Payload.fromBytes(bytes))
+        fun sendP2PFile(peerKey: String, fileName: String, fileSize: String, kind: String, dataUrl: String) {
+            Thread {
+                try {
+                    val transferId = "f_" + System.currentTimeMillis()
+                    val chunkSize = 14000
+                    val totalChunks = ((dataUrl.length + chunkSize - 1) / chunkSize).coerceAtLeast(1)
+
+                    for (i in 0 until totalChunks) {
+                        val start = i * chunkSize
+                        val end = (start + chunkSize).coerceAtMost(dataUrl.length)
+                        val chunkData = dataUrl.substring(start, end)
+
+                        val json = JSONObject().apply {
+                            put("type", "file_chunk")
+                            put("transferId", transferId)
+                            put("fileName", fileName)
+                            put("fileSize", fileSize)
+                            put("kind", kind)
+                            put("index", i)
+                            put("total", totalChunks)
+                            put("data", chunkData)
+                        }
+                        val bytes = json.toString().toByteArray(StandardCharsets.UTF_8)
+                        connectionsClient.sendPayload(peerKey, Payload.fromBytes(bytes))
+                        Thread.sleep(35)
+                    }
+                    runOnUiThread {
+                        webView.evaluateJavascript("showToast('✅ File sent to peer: $fileName');", null)
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread {
+                        webView.evaluateJavascript("showToast('❌ File send error');", null)
+                    }
+                }
+            }.start()
         }
 
         @JavascriptInterface
@@ -569,21 +716,26 @@ class MainActivity : AppCompatActivity() {
             val initials = safeName.take(2).uppercase()
             val js = """
                 if (typeof peerData !== 'undefined') {
-                    if (!peerData['$endpointId']) {
-                        peerData['$endpointId'] = {
-                            key: '$endpointId',
-                            initials: '$initials',
-                            name: '$safeName',
-                            mode: 'direct',
-                            distanceMeters: 12,
-                            note: 'Tap Chat to Connect',
-                            trusted: false,
-                            blocked: false,
-                            messages: []
-                        };
-                    }
+                    // Remove any old disconnected entry with the same device name
+                    Object.keys(peerData).forEach(oldKey => {
+                        if (oldKey !== '$endpointId' && peerData[oldKey].name === '$safeName') {
+                            delete peerData[oldKey];
+                        }
+                    });
+                    peerData['$endpointId'] = {
+                        key: '$endpointId',
+                        initials: '$initials',
+                        name: '$safeName',
+                        mode: 'direct',
+                        distanceMeters: 12,
+                        note: 'Nearby • Tap Chat',
+                        trusted: false,
+                        blocked: false,
+                        messages: []
+                    };
+                    saveState(true);
                     refreshAllLists();
-                    showToast('📡 Found nearby device: $safeName');
+                    showToast('📡 Found nearby: $safeName');
                 }
             """.trimIndent()
             runOnUiThread { webView.evaluateJavascript(js, null) }
@@ -605,15 +757,14 @@ class MainActivity : AppCompatActivity() {
             val safeName = info.endpointName.replace("'", "")
             val initials = safeName.take(2).uppercase()
 
-            // If we initiated the request from this phone, auto-accept our side and wait for other phone
-            if (outgoingRequests.contains(endpointId) || !info.isIncomingConnection) {
-                connectionsClient.acceptConnection(endpointId, payloadCallback)
-                return
-            }
-
-            // If the other phone requested to connect to us, show the Accept/Reject/Block popup!
-            val js = """
+            // Ensure peer exists in peerData on both phones
+            val ensurePeerJs = """
                 if (typeof peerData !== 'undefined') {
+                    Object.keys(peerData).forEach(oldKey => {
+                        if (oldKey !== '$endpointId' && peerData[oldKey].name === '$safeName') {
+                            delete peerData[oldKey];
+                        }
+                    });
                     if (!peerData['$endpointId']) {
                         peerData['$endpointId'] = {
                             key: '$endpointId',
@@ -628,10 +779,27 @@ class MainActivity : AppCompatActivity() {
                         };
                     }
                     refreshAllLists();
-                    openRequestModal('$safeName', 'Direct Wi-Fi P2P', '10m', '$endpointId');
                 }
             """.trimIndent()
-            runOnUiThread { webView.evaluateJavascript(js, null) }
+            runOnUiThread { webView.evaluateJavascript(ensurePeerJs, null) }
+
+            // Phone A (Sender): auto-accept our side and wait for Phone B to tap Accept
+            if (outgoingRequests.contains(endpointId) || !info.isIncomingConnection) {
+                connectionsClient.acceptConnection(endpointId, payloadCallback)
+                return
+            }
+
+            // Phone B (Receiver): update top Req notification bar AND open Accept/Reject popup!
+            val receiverPopupJs = """
+                if (typeof window.incomingQueue !== 'undefined') {
+                    window.incomingQueue = window.incomingQueue.filter(r => r.key !== '$endpointId');
+                    window.incomingQueue.push({ key: '$endpointId', name: '$safeName' });
+                    if (window.updateReqBadge) window.updateReqBadge();
+                }
+                showToast('🔔 Connection Request from $safeName!');
+                openRequestModal('$safeName', 'Direct Wi-Fi P2P', '10m', '$endpointId');
+            """.trimIndent()
+            runOnUiThread { webView.evaluateJavascript(receiverPopupJs, null) }
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
@@ -639,18 +807,23 @@ class MainActivity : AppCompatActivity() {
             if (result.status.statusCode == ConnectionsStatusCodes.STATUS_OK) {
                 connectedPeers.add(endpointId)
                 val js = """
+                    if (typeof window.incomingQueue !== 'undefined') {
+                        window.incomingQueue = window.incomingQueue.filter(r => r.key !== '$endpointId');
+                        if (window.updateReqBadge) window.updateReqBadge();
+                    }
                     if (typeof peerData !== 'undefined' && peerData['$endpointId']) {
                         peerData['$endpointId'].trusted = true;
                         peerData['$endpointId'].mode = 'direct';
                         peerData['$endpointId'].note = 'Live P2P Connected';
                         saveState(true);
                         refreshAllLists();
-                        showToast('✓ Connected with ' + peerData['$endpointId'].name);
+                        showToast('✓ Live P2P Connected with ' + peerData['$endpointId'].name);
                         openChat('$endpointId');
                     }
                 """.trimIndent()
                 runOnUiThread { webView.evaluateJavascript(js, null) }
             } else {
+                connectedPeers.remove(endpointId)
                 val js = "showToast('❌ Connection rejected or failed');"
                 runOnUiThread { webView.evaluateJavascript(js, null) }
             }
@@ -660,7 +833,8 @@ class MainActivity : AppCompatActivity() {
             connectedPeers.remove(endpointId)
             val js = """
                 if (typeof peerData !== 'undefined' && peerData['$endpointId']) {
-                    peerData['$endpointId'].note = 'Disconnected';
+                    peerData['$endpointId'].trusted = false;
+                    peerData['$endpointId'].note = 'Disconnected • Tap Chat';
                     refreshAllLists();
                     showToast('⚠️ Peer disconnected');
                 }
@@ -676,6 +850,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val obj = JSONObject(raw)
                     val msgType = obj.optString("type", "chat")
+
                     if (msgType == "chat") {
                         val text = obj.optString("text", "")
                             .replace("\\", "\\\\")
@@ -683,40 +858,85 @@ class MainActivity : AppCompatActivity() {
                             .replace("\n", "\\n")
                         val js = """
                             if (typeof peerData !== 'undefined' && peerData['$endpointId']) {
-                                peerData['$endpointId'].messages.push({ sender: 'them', text: '$text' });
-                                saveState(true);
-                                refreshAllLists();
-                                if (activePeer === '$endpointId') renderMessages();
-                                else showToast('💬 New message from ' + peerData['$endpointId'].name);
-                            }
-                        """.trimIndent()
-                        runOnUiThread { webView.evaluateJavascript(js, null) }
-                    } else if (msgType == "file") {
-                        val fileName = obj.optString("fileName", "File").replace("'", "\\'")
-                        val kind = obj.optString("kind", "Document")
-                        val dataUrl = obj.optString("dataUrl", "")
-                        val js = """
-                            if (typeof peerData !== 'undefined' && peerData['$endpointId']) {
+                                const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                                 peerData['$endpointId'].messages.push({
                                     sender: 'them',
-                                    text: '📎 Received $kind: $fileName',
-                                    fileUrl: '$dataUrl',
-                                    fileName: '$fileName',
-                                    isImage: ${dataUrl.startsWith("data:image/")}
+                                    from: 'them',
+                                    mine: false,
+                                    type: 'text',
+                                    text: '$text',
+                                    time: nowTime
                                 });
                                 saveState(true);
                                 refreshAllLists();
-                                if (activePeer === '$endpointId') renderMessages();
-                                showToast('📥 File received: $fileName');
+                                if (typeof activePeer !== 'undefined' && activePeer === '$endpointId') {
+                                    renderMessages();
+                                } else {
+                                    showToast('💬 ' + peerData['$endpointId'].name + ': $text');
+                                }
                             }
                         """.trimIndent()
                         runOnUiThread { webView.evaluateJavascript(js, null) }
+
+                    } else if (msgType == "file_chunk") {
+                        val transferId = obj.optString("transferId", "f0")
+                        val fileName = obj.optString("fileName", "received_file").replace("'", "")
+                        val fileSize = obj.optString("fileSize", "0 MB")
+                        val index = obj.optInt("index", 0)
+                        val total = obj.optInt("total", 1)
+                        val chunkData = obj.optString("data", "")
+
+                        val chunkMap = incomingFileChunks.getOrPut(transferId) { ConcurrentHashMap() }
+                        chunkMap[index] = chunkData
+
+                        val receivedCount = chunkMap.size
+                        val pct = ((receivedCount * 100) / total).coerceAtMost(99)
+
+                        if (receivedCount < total) {
+                            val progJs = "if(window.onReceiveFileProgress) window.onReceiveFileProgress('$endpointId', '$transferId', '$fileName', '$fileSize', $pct, '');"
+                            runOnUiThread { webView.evaluateJavascript(progJs, null) }
+                        } else {
+                            // Reassemble full DataURL and save to Downloads folder
+                            Thread {
+                                val sb = StringBuilder()
+                                for (i in 0 until total) {
+                                    sb.append(chunkMap[i] ?: "")
+                                }
+                                incomingFileChunks.remove(transferId)
+                                val fullDataUrl = sb.toString()
+                                val savedPath = saveBase64FileToDownloads(fileName, fullDataUrl)
+
+                                runOnUiThread {
+                                    val doneJs = """
+                                        if (window.onReceiveFileProgress) {
+                                            window.onReceiveFileProgress('$endpointId', '$transferId', '$fileName', '$fileSize', 100, '$savedPath');
+                                        }
+                                        showToast('📥 Saved to Downloads: $fileName');
+                                    """.trimIndent()
+                                    webView.evaluateJavascript(doneJs, null)
+                                }
+                            }.start()
+                        }
                     }
                 } catch (e: Exception) {}
             }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {}
+    }
+
+    private fun saveBase64FileToDownloads(fileName: String, dataUrl: String): String {
+        return try {
+            val base64Part = if (dataUrl.contains(",")) dataUrl.substringAfter(",") else dataUrl
+            val bytes = Base64.decode(base64Part, Base64.DEFAULT)
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            if (!downloadsDir.exists()) downloadsDir.mkdirs()
+            val outFile = File(downloadsDir, "ZeroNet_$fileName")
+            FileOutputStream(outFile).use { it.write(bytes) }
+            outFile.absolutePath
+        } catch (e: Exception) {
+            ""
+        }
     }
 
     private fun requestNecessaryPermissions() {
